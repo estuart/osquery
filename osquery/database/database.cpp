@@ -32,12 +32,6 @@ CLI_FLAG(string,
          "If using a disk-based backing store, specify a path");
 FLAG_ALIAS(std::string, db_path, database_path);
 
-CLI_FLAG(bool,
-         database_in_memory,
-         false,
-         "Keep osquery backing-store in memory");
-FLAG_ALIAS(bool, use_in_memory_database, database_in_memory);
-
 FLAG(bool, disable_database, false, "Disable the persistent RocksDB storage");
 DECLARE_bool(decorations_top_level);
 
@@ -482,8 +476,8 @@ Status DatabasePlugin::call(const PluginRequest& request,
       max = std::stoul(request.at("max"));
     }
     auto status = this->scan(domain, keys, request.at("prefix"), max);
-    for (const auto& key : keys) {
-      response.push_back({{"k", key}});
+    for (const auto& k : keys) {
+      response.push_back({{"k", k}});
     }
     return status;
   }

@@ -60,6 +60,49 @@ static inline EventTime timeFromRecord(const std::string& record) {
   return afinite;
 }
 
+static inline void getOptimizeData(EventTime& o_time,
+                                   size_t& o_eid,
+                                   const std::string& publisher) {
+  // Read the optimization time for the current executing query.
+  std::string query_name;
+  getDatabaseValue(kPersistentSettings, kExecutingQuery, query_name);
+  if (query_name.empty()) {
+    // Fallback when daemons disable query monitoring.
+    query_name = publisher;
+  }
+
+  {
+    std::string content;
+    getDatabaseValue(kEvents, "optimize." + query_name, content);
+    long long optimize_time = 0;
+    safeStrtoll(content, 10, optimize_time);
+    o_time = static_cast<EventTime>(optimize_time);
+  }
+
+  {
+    std::string content;
+    getDatabaseValue(kEvents, "optimize_eid." + query_name, content);
+    long long optimize_eid = 0;
+    safeStrtoll(content, 10, optimize_eid);
+    o_eid = static_cast<size_t>(optimize_eid);
+  }
+}
+
+static inline void setOptimizeData(EventTime time,
+                                   size_t eid,
+                                   const std::string& publisher) {
+  // Store the optimization time and eid.
+  std::string query_name;
+  getDatabaseValue(kPersistentSettings, kExecutingQuery, query_name);
+  if (query_name.empty()) {
+    // Fallback when daemons disable query monitoring.
+    query_name = publisher;
+  }
+
+  setDatabaseValue(kEvents, "optimize." + query_name, std::to_string(time));
+  setDatabaseValue(kEvents, "optimize_eid." + query_name, std::to_string(eid));
+}
+
 QueryData EventSubscriberPlugin::genTable(QueryContext& context) {
   // Stop is an unsigned (-1), our end of time equivalent.
   EventTime start = 0, stop = 0;
@@ -83,13 +126,9 @@ QueryData EventSubscriberPlugin::genTable(QueryContext& context) {
   } else if (kToolType == ToolType::DAEMON && FLAGS_events_optimize) {
     // If the daemon is querying a subscriber without a 'time' constraint and
     // allows optimization, only emit events since the last query.
+    getOptimizeData(optimize_time_, optimize_eid_, dbNamespace());
     start = optimize_time_;
     optimize_time_ = getUnixTime() - 1;
-
-    // Store the optimize time such that it can be restored if the daemon is
-    // restarted.
-    auto index_key = "optimize." + dbNamespace();
-    setDatabaseValue(kEvents, index_key, std::to_string(optimize_time_));
   }
   return get(start, stop);
 }
@@ -120,7 +159,7 @@ void EventPublisherPlugin::fire(const EventContextRef& ec, EventTime time) {
   WriteLock lock(subscription_lock_);
   for (const auto& subscription : subscriptions_) {
     auto es = EventFactory::getEventSubscriber(subscription->subscriber_name);
-    if (es != nullptr && es->state() == SUBSCRIBER_RUNNING) {
+    if (es != nullptr && es->state() == EventState::EVENT_RUNNING) {
       fireCallback(subscription, ec);
     }
   }
@@ -421,8 +460,6 @@ QueryData EventSubscriberPlugin::get(EventTime start, EventTime stop) {
     unsigned long int eidr = 0;
     if (safeStrtoul(records.back().first, 10, eidr)) {
       optimize_eid_ = static_cast<size_t>(eidr);
-      auto index_key = "optimize_id." + dbNamespace();
-      setDatabaseValue(kEvents, index_key, records.back().first);
     }
   }
 
@@ -446,6 +483,10 @@ QueryData EventSubscriberPlugin::get(EventTime start, EventTime stop) {
     // Set the expire time to NOW - "configured lifetime".
     // Index retrieval will apply the constraints checking and auto-expire.
     expire_time_ = getUnixTime() - getEventsExpiry();
+  }
+
+  if (FLAGS_events_optimize) {
+    setOptimizeData(optimize_time_, optimize_eid_, dbNamespace());
   }
 
   return results;
@@ -496,6 +537,12 @@ EventPublisherRef EventSubscriberPlugin::getPublisher() const {
 
 void EventSubscriberPlugin::removeSubscriptions() {
   subscription_count_ = 0;
+  auto publisher = getPublisher();
+  if (publisher == nullptr) {
+    LOG(WARNING) << "Cannot remove subscriptions from: " << getName();
+    return;
+  }
+
   getPublisher()->removeSubscriptions(getName());
 }
 
@@ -593,6 +640,7 @@ Status EventFactory::run(EventPublisherID& type_id) {
     // Publishers auto tear down when their run loop stops.
   }
   publisher->tearDown();
+  publisher->state(EventState::EVENT_NONE);
 
   // Do not remove the publisher from the event factory.
   // If the event factory's `end` method was called these publishers will be
@@ -631,7 +679,12 @@ Status EventFactory::registerEventPublisher(const PluginRef& pub) {
   // Do not set up event publisher if events are disabled.
   ef.event_pubs_[type_id] = specialized_pub;
   if (!FLAGS_disable_events) {
+    if (specialized_pub->state() != EventState::EVENT_NONE) {
+      specialized_pub->tearDown();
+    }
+
     auto status = specialized_pub->setUp();
+    specialized_pub->state(EventState::EVENT_SETUP);
     if (!status.ok()) {
       // Only start event loop if setUp succeeds.
       LOG(INFO) << "Event publisher failed setup: " << type_id << ": "
@@ -684,45 +737,32 @@ Status EventFactory::registerEventSubscriber(const PluginRef& sub) {
     }
   }
 
+  if (specialized_sub->state() != EventState::EVENT_NONE) {
+    specialized_sub->tearDown();
+  }
+
   // Allow subscribers a configure-time setup to determine if they should run.
   auto status = specialized_sub->setUp();
   if (!status) {
     specialized_sub->disabled = true;
   }
+  specialized_sub->state(EventState::EVENT_SETUP);
 
   // Let the subscriber initialize any Subscriptions.
   if (!FLAGS_disable_events && !specialized_sub->disabled) {
     specialized_sub->expireCheck(true);
     status = specialized_sub->init();
-    specialized_sub->state(SUBSCRIBER_RUNNING);
+    specialized_sub->state(EventState::EVENT_RUNNING);
   } else {
-    specialized_sub->state(SUBSCRIBER_PAUSED);
+    specialized_sub->state(EventState::EVENT_PAUSED);
   }
 
   auto& ef = EventFactory::getInstance();
   ef.event_subs_[name] = specialized_sub;
 
-  // Restore optimize times for a daemon.
-  if (kToolType == ToolType::DAEMON && FLAGS_events_optimize) {
-    auto index_key = "optimize." + specialized_sub->dbNamespace();
-    std::string content;
-    if (getDatabaseValue(kEvents, index_key, content)) {
-      long long optimize_time = 0;
-      safeStrtoll(content, 10, optimize_time);
-      specialized_sub->optimize_time_ = static_cast<EventTime>(optimize_time);
-    }
-
-    index_key = "optimize_id." + specialized_sub->dbNamespace();
-    if (getDatabaseValue(kEvents, index_key, content)) {
-      long long optimize_id = 0;
-      safeStrtoll(content, 10, optimize_id);
-      specialized_sub->optimize_eid_ = static_cast<size_t>(optimize_id);
-    }
-  }
-
   // Set state of subscriber.
   if (!status.ok()) {
-    specialized_sub->state(SUBSCRIBER_FAILED);
+    specialized_sub->state(EventState::EVENT_FAILED);
     return Status(1, status.getMessage());
   } else {
     return Status(0, "OK");
@@ -796,6 +836,7 @@ Status EventFactory::deregisterEventPublisher(EventPublisherID& type_id) {
       // If a publisher's run loop was not started, call tearDown since
       // the setUp happened at publisher registration time.
       publisher->tearDown();
+      publisher->state(EventState::EVENT_NONE);
       // If the run loop did run the tear down and erase will happen in the
       // event thread wrapper when isEnding is next checked.
       ef.event_pubs_.erase(type_id);

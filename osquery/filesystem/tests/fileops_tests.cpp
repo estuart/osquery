@@ -161,7 +161,7 @@ TEST_F(FileOpsTests, test_shareRead) {
     buf.assign(test1_size, '\0');
 
     EXPECT_EQ(test1_size, reader_fd->read(buf.data(), test1_size));
-    EXPECT_EQ(test1_size, buf.size());
+    EXPECT_EQ(static_cast<size_t>(test1_size), buf.size());
 
     for (ssize_t i = 0; i < test1_size; i++) {
       EXPECT_EQ(test1_data[i], buf[i]);
@@ -228,7 +228,7 @@ TEST_F(FileOpsTests, test_append) {
     std::vector<char> buf;
     buf.assign(test_size, '\0');
     EXPECT_EQ(test_size, fd.read(buf.data(), test_size));
-    EXPECT_EQ(test_size, buf.size());
+    EXPECT_EQ(static_cast<size_t>(test_size), buf.size());
 
     for (ssize_t i = 0; i < test_size; i++) {
       EXPECT_EQ(test_data[i], buf[i]);
@@ -321,6 +321,30 @@ TEST_F(FileOpsTests, test_seekFile) {
 
     EXPECT_EQ(expected_len, fd.read(buffer.data(), expected_len));
     EXPECT_EQ(0, ::memcmp(buffer.data(), expected, expected_len));
+  }
+}
+
+TEST_F(FileOpsTests, test_large_read_write) {
+  TempFile tmp_file;
+  std::string path = tmp_file.path();
+
+  const std::string expected(200000000, 'A');
+  const ssize_t expected_len = expected.size();
+
+  {
+    PlatformFile fd(path, PF_CREATE_ALWAYS | PF_WRITE);
+    EXPECT_TRUE(fd.isValid());
+    auto write_len = fd.write(expected.c_str(), expected_len);
+    EXPECT_EQ(expected_len, write_len);
+  }
+
+  {
+    std::vector<char> buffer(expected_len);
+    PlatformFile fd(path, PF_OPEN_EXISTING | PF_READ);
+    EXPECT_TRUE(fd.isValid());
+    auto read_len = fd.read(buffer.data(), expected_len);
+    EXPECT_EQ(expected_len, read_len);
+    EXPECT_EQ(expected, std::string(buffer.data()));
   }
 }
 

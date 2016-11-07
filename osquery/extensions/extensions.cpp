@@ -528,6 +528,7 @@ Status startExtension(const std::string& manager_path,
   // plugins are not available in the extension's local registry.
   Registry::setActive("config", options["config_plugin"].value);
   Registry::setActive("logger", options["logger_plugin"].value);
+  Registry::setActive("distributed", options["distributed_plugin"].value);
   // Set up all lazy registry plugins and the active config/logger plugin.
   Registry::setUp();
 
@@ -692,8 +693,8 @@ Status callExtension(const std::string& extension_path,
 
   // Convert from Thrift-internal list type to PluginResponse type.
   if (ext_response.status.code == ExtensionCode::EXT_SUCCESS) {
-    for (const auto& item : ext_response.response) {
-      response.push_back(item);
+    for (const auto& response_item : ext_response.response) {
+      response.push_back(response_item);
     }
   }
   return Status(ext_response.status.code, ext_response.status.message);
@@ -748,12 +749,12 @@ Status startExtensionManager(const std::string& manager_path) {
     bool waited = false;
     auto extensions = osquery::split(FLAGS_extensions_require, ",");
     for (const auto& extension : extensions) {
-      auto status = applyExtensionDelay(([extension, &waited](bool& stop) {
-        ExtensionList extensions;
-        if (getExtensions(extensions).ok()) {
-          for (const auto& existing : extensions) {
+      status = applyExtensionDelay(([extension, &waited](bool& stop) {
+        ExtensionList registered_extensions;
+        if (getExtensions(registered_extensions).ok()) {
+          for (const auto& existing : registered_extensions) {
             if (existing.second.name == extension) {
-              return Status(0);
+              return pingExtension(getExtensionSocket(existing.first));
             }
           }
         }

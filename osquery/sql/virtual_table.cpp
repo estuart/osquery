@@ -219,7 +219,7 @@ int xCreate(sqlite3* db,
 
   // Create the requested 'aliases'.
   for (const auto& view : views) {
-    auto statement = "CREATE VIEW " + view + " AS SELECT * FROM " + name;
+    statement = "CREATE VIEW " + view + " AS SELECT * FROM " + name;
     sqlite3_exec(db, statement.c_str(), nullptr, nullptr, nullptr);
   }
   *ppVtab = (sqlite3_vtab*)pVtab;
@@ -343,7 +343,7 @@ static int xBestIndex(sqlite3_vtab* tab, sqlite3_index_info* pIdxInfo) {
       if (options & ColumnOptions::REQUIRED) {
         index_used = true;
         required_satisfied = true;
-      } else if (options & ColumnOptions::INDEX) {
+      } else if (options & (ColumnOptions::INDEX | ColumnOptions::ADDITIONAL)) {
         index_used = true;
       }
 

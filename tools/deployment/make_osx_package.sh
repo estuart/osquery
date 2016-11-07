@@ -227,6 +227,27 @@ function main() {
            $OUTPUT_PKG_PATH 2>&1  1>/dev/null
   log "package created at $OUTPUT_PKG_PATH"
 
+  # We optionally create an RPM equivalent.
+  FPM=$(which fpm)
+  if [[ ! "$FPM" = "" ]]; then
+    log "creating RPM equivalent"
+
+    PACKAGE_ARCH=$(uname -m)
+    PACKAGE_ITERATION="1.darwin"
+    RPM_APP_VERSION=$(echo ${APP_VERSION}|tr '-' '_')
+    OUTPUT_RPM_PATH="$BUILD_DIR/osquery-$RPM_APP_VERSION-$PACKAGE_ITERATION.$PACKAGE_ARCH.rpm"
+    CMD="$FPM -s dir -t rpm \
+      -n osquery \
+      -v $RPM_APP_VERSION \
+      --iteration $PACKAGE_ITERATION -a $PACKAGE_ARCH \
+      -p $OUTPUT_RPM_PATH \
+      --url https://osquery.io -m osquery@osquery.io \
+      --vendor Facebook --license BSD \
+      \"$INSTALL_PREFIX/=/\""
+    eval "$CMD"
+    log "RPM package (also) created at $OUTPUT_RPM_PATH"
+  fi
+
   # Check if a kernel extension should be built alongside.
   if [[ -d "$KERNEL_EXTENSION_SRC" ]]; then
     rm -rf $KERNEL_WORKING_DIR

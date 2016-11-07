@@ -29,6 +29,9 @@ class Pack;
 class Schedule;
 class ConfigParserPlugin;
 
+/// The name of the executing query within the single-threaded schedule.
+extern const std::string kExecutingQuery;
+
 /**
  * @brief The programmatic representation of osquery's configuration
  *
@@ -322,6 +325,7 @@ class Config : private boost::noncopyable {
   FRIEND_TEST(SchedulerTests, test_monitor);
   FRIEND_TEST(SchedulerTests, test_config_results_purge);
   FRIEND_TEST(EventsTests, test_event_subscriber_configure);
+  FRIEND_TEST(TLSConfigTests, test_retrieve_config);
 };
 
 /**
